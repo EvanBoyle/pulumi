@@ -31,12 +31,10 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"testing"
 	"time"
 
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/pkg/errors"
-	"github.com/stretchr/testify/assert"
 
 	"github.com/pulumi/pulumi/pkg/v2/backend/filestate"
 	"github.com/pulumi/pulumi/pkg/v2/engine"
@@ -48,7 +46,6 @@ import (
 	pulumi_testing "github.com/pulumi/pulumi/sdk/v2/go/common/testing"
 	"github.com/pulumi/pulumi/sdk/v2/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v2/go/common/tools"
-	"github.com/pulumi/pulumi/sdk/v2/go/common/util/ciutil"
 	"github.com/pulumi/pulumi/sdk/v2/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v2/go/common/util/fsutil"
 	"github.com/pulumi/pulumi/sdk/v2/go/common/util/retry"
@@ -72,7 +69,7 @@ type RuntimeValidationStackInfo struct {
 // EditDir is an optional edit to apply to the example, as subsequent deployments.
 type EditDir struct {
 	Dir                    string
-	ExtraRuntimeValidation func(t *testing.T, stack RuntimeValidationStackInfo)
+	ExtraRuntimeValidation func(stack RuntimeValidationStackInfo)
 
 	// Additive is true if Dir should be copied *on top* of the test directory.
 	// Otherwise Dir *replaces* the test directory, except we keep .pulumi/ and Pulumi.yaml and Pulumi.<stack>.yaml.
@@ -157,7 +154,7 @@ type ProgramTestOptions struct {
 	// EditDirs is an optional list of edits to apply to the example, as subsequent deployments.
 	EditDirs []EditDir
 	// ExtraRuntimeValidation is an optional callback for additional validation, called before applying edits.
-	ExtraRuntimeValidation func(t *testing.T, stack RuntimeValidationStackInfo)
+	ExtraRuntimeValidation func(stack RuntimeValidationStackInfo)
 	// RelativeWorkDir is an optional path relative to `Dir` which should be used as working directory during tests.
 	RelativeWorkDir string
 	// AllowEmptyPreviewChanges is true if we expect that this test's no-op preview may propose changes (e.g.
@@ -493,18 +490,14 @@ func init() {
 //
 // [provider] should be one of "aws" or "azure"
 func GetLogs(
-	t *testing.T,
+
 	provider, region string,
 	stackInfo RuntimeValidationStackInfo,
 	query operations.LogQuery) *[]operations.LogEntry {
 
-	snap, err := stack.DeserializeDeploymentV3(*stackInfo.Deployment, stack.DefaultSecretsProvider)
-	assert.NoError(t, err)
+	snap, _ := stack.DeserializeDeploymentV3(*stackInfo.Deployment, stack.DefaultSecretsProvider)
 
 	tree := operations.NewResourceTree(snap.Resources)
-	if !assert.NotNil(t, tree) {
-		return nil
-	}
 
 	cfg := map[config.Key]string{
 		config.MustMakeKey(provider, "region"): region,
@@ -512,15 +505,12 @@ func GetLogs(
 	ops := tree.OperationsProvider(cfg)
 
 	// Validate logs from example
-	logs, err := ops.GetLogs(query)
-	if !assert.NoError(t, err) {
-		return nil
-	}
+	logs, _ := ops.GetLogs(query)
 
 	return logs
 }
 
-func prepareProgram(t *testing.T, opts *ProgramTestOptions) {
+func prepareProgram(opts *ProgramTestOptions) {
 	// If we're just listing tests, simply print this test's directory.
 	if listDirs {
 		fmt.Printf("%s\n", opts.Dir)
@@ -528,22 +518,13 @@ func prepareProgram(t *testing.T, opts *ProgramTestOptions) {
 
 	// If we have a matcher, ensure that this test matches its pattern.
 	if directoryMatcher.re != nil && !directoryMatcher.re.Match([]byte(opts.Dir)) {
-		t.Skip(fmt.Sprintf("Skipping: '%v' does not match '%v'", opts.Dir, directoryMatcher.re))
+		return
 	}
 
 	// Disable stack backups for tests to avoid filling up ~/.pulumi/backups with unnecessary
 	// backups of test stacks.
 	if err := os.Setenv(filestate.DisableCheckpointBackupsEnvVar, "1"); err != nil {
-		t.Errorf("error setting env var '%s': %v", filestate.DisableCheckpointBackupsEnvVar, err)
-	}
-
-	// We want tests to default into being ran in parallel, hence the odd double negative.
-	if !opts.NoParallel {
-		t.Parallel()
-	}
-
-	if ciutil.IsCI() && os.Getenv("PULUMI_ACCESS_TOKEN") == "" {
-		t.Skip("Skipping: PULUMI_ACCESS_TOKEN is not set")
+		return
 	}
 
 	// If the test panics, recover and log instead of letting the panic escape the test. Even though *this* test will
@@ -551,7 +532,7 @@ func prepareProgram(t *testing.T, opts *ProgramTestOptions) {
 	// other tests running in parallel from cleaning up.
 	defer func() {
 		if failure := recover(); failure != nil {
-			t.Errorf("panic testing %v: %v", opts.Dir, failure)
+			return
 		}
 	}()
 
@@ -561,7 +542,7 @@ func prepareProgram(t *testing.T, opts *ProgramTestOptions) {
 		if v := os.Getenv("PULUMI_TEST_REPORT_CONFIG"); v != "" {
 			splits := strings.Split(v, ":")
 			if len(splits) != 3 {
-				t.Errorf("report config should be set to a value of the form: <aws-region>:<bucket-name>:<keyPrefix>")
+				return
 			}
 
 			opts.ReportStats = NewS3Reporter(splits[0], splits[1], splits[2])
@@ -597,17 +578,16 @@ func prepareProgram(t *testing.T, opts *ProgramTestOptions) {
 //   (+) Only if `opts.RunBuild` is true.
 //
 // All commands must return success return codes for the test to succeed, unless ExpectFailure is true.
-func ProgramTest(t *testing.T, opts *ProgramTestOptions) {
-	prepareProgram(t, opts)
-	pt := newProgramTester(t, opts)
-	err := pt.TestLifeCycleInitAndDestroy()
-	assert.NoError(t, err)
+func ProgramTest(opts *ProgramTestOptions) {
+	prepareProgram(opts)
+	pt := newProgramTester(opts)
+	_ = pt.TestLifeCycleInitAndDestroy()
 }
 
 // ProgramTestManualLifeCycle returns a ProgramTester than must be manually controlled in terms of its lifecycle
-func ProgramTestManualLifeCycle(t *testing.T, opts *ProgramTestOptions) *ProgramTester {
-	prepareProgram(t, opts)
-	pt := newProgramTester(t, opts)
+func ProgramTestManualLifeCycle(opts *ProgramTestOptions) *ProgramTester {
+	prepareProgram(opts)
+	pt := newProgramTester(opts)
 	return pt
 }
 
@@ -623,7 +603,6 @@ func fprintf(w io.Writer, format string, a ...interface{}) {
 
 // ProgramTester contains state associated with running a single test pass.
 type ProgramTester struct {
-	t            *testing.T          // the Go tester for this run.
 	opts         *ProgramTestOptions // options that control this test run.
 	bin          string              // the `pulumi` binary we are using.
 	yarnBin      string              // the `yarn` binary we are using.
@@ -637,7 +616,7 @@ type ProgramTester struct {
 	TestFinished bool                // whether or not the test if finished
 }
 
-func newProgramTester(t *testing.T, opts *ProgramTestOptions) *ProgramTester {
+func newProgramTester(opts *ProgramTestOptions) *ProgramTester {
 	stackName := opts.GetStackName()
 	maxStepTries := 1
 	if opts.RetryFailedSteps {
@@ -649,7 +628,6 @@ func newProgramTester(t *testing.T, opts *ProgramTestOptions) *ProgramTester {
 		opts.SkipEmptyPreviewUpdate = true
 	}
 	return &ProgramTester{
-		t:            t,
 		opts:         opts,
 		eventLog:     filepath.Join(os.TempDir(), string(stackName)+"-events.json"),
 		maxStepTries: maxStepTries,
@@ -714,7 +692,7 @@ func (pt *ProgramTester) pipenvCmd(args []string) ([]string, error) {
 }
 
 func (pt *ProgramTester) runCommand(name string, args []string, wd string) error {
-	return RunCommand(pt.t, name, args, wd, pt.opts)
+	return RunCommand(name, args, wd, pt.opts)
 }
 
 func (pt *ProgramTester) runPulumiCommand(name string, args []string, wd string, expectFailure bool) error {
@@ -766,7 +744,6 @@ func (pt *ProgramTester) runPulumiCommand(name string, args []string, wd string,
 					return false, nil, errors.Errorf("%v did not succeed after %v tries", cmd, try+1)
 				}
 
-				pt.t.Logf("%v failed: %v; retrying...", cmd, runerr)
 				return false, nil, nil
 			}
 
@@ -871,13 +848,10 @@ func (pt *ProgramTester) TestLifeCyclePrepare() error {
 func (pt *ProgramTester) TestCleanUp() {
 	testFinished := pt.TestFinished
 	if pt.tmpdir != "" {
-		if !testFinished || pt.t.Failed() {
+		if !testFinished {
 			// Test aborted or failed. Maybe copy to "failed tests" directory.
-			failedTestsDir := os.Getenv("PULUMI_FAILED_TESTS_DIR")
-			if failedTestsDir != "" {
-				dest := filepath.Join(failedTestsDir, pt.t.Name()+uniqueSuffix())
-				contract.IgnoreError(fsutil.CopyFile(dest, pt.tmpdir, nil))
-			}
+			_ = os.Getenv("PULUMI_FAILED_TESTS_DIR")
+
 		} else {
 			contract.IgnoreError(os.RemoveAll(pt.tmpdir))
 		}
@@ -885,9 +859,7 @@ func (pt *ProgramTester) TestCleanUp() {
 		// When tmpdir is empty, we ran "in tree", which means we wrote output
 		// to the "command-output" folder in the projdir, and we should clean
 		// it up if the test passed
-		if testFinished && !pt.t.Failed() {
-			contract.IgnoreError(os.RemoveAll(filepath.Join(pt.projdir, commandOutputFolderName)))
-		}
+
 	}
 }
 
@@ -907,10 +879,10 @@ func (pt *ProgramTester) TestLifeCycleInitAndDestroy() error {
 	}
 
 	// Ensure that before we exit, we attempt to destroy and remove the stack.
-	defer func() {
-		destroyErr := pt.TestLifeCycleDestroy()
-		assert.NoError(pt.t, destroyErr)
-	}()
+	// TODO parameterize
+	// defer func() {
+	// 	_ = pt.TestLifeCycleDestroy()
+	// }()
 
 	if err = pt.TestPreviewUpdateAndEdits(); err != nil {
 		return errors.Wrap(err, "running test preview, update, and edits")
@@ -1047,11 +1019,6 @@ func (pt *ProgramTester) TestLifeCycleDestroy() error {
 		}
 		if err := pt.runPulumiCommand("pulumi-destroy", destroy, pt.projdir, false); err != nil {
 			return err
-		}
-
-		if pt.t.Failed() {
-			fprintf(pt.opts.Stdout, "Test failed, retaining stack '%s'\n", pt.opts.GetStackNameWithOwner())
-			return nil
 		}
 
 		if !pt.opts.SkipStackRemoval {
@@ -1330,7 +1297,7 @@ func (pt *ProgramTester) testEdit(dir string, i int, edit EditDir) error {
 }
 
 func (pt *ProgramTester) performExtraRuntimeValidation(
-	extraRuntimeValidation func(t *testing.T, stack RuntimeValidationStackInfo), dir string) error {
+	extraRuntimeValidation func(stack RuntimeValidationStackInfo), dir string) error {
 
 	if extraRuntimeValidation == nil {
 		return nil
@@ -1409,7 +1376,7 @@ func (pt *ProgramTester) performExtraRuntimeValidation(
 	}
 
 	fprintf(pt.opts.Stdout, "Performing extra runtime validation.\n")
-	extraRuntimeValidation(pt.t, stackInfo)
+	extraRuntimeValidation(stackInfo)
 	fprintf(pt.opts.Stdout, "Extra runtime validation complete.\n")
 	return nil
 }

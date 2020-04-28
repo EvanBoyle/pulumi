@@ -20,7 +20,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"testing"
 	"time"
 
 	"github.com/pulumi/pulumi/sdk/v2/go/common/util/cmdutil"
@@ -28,7 +27,7 @@ import (
 
 // RunCommand executes the specified command and additional arguments, wrapping any output in the
 // specialized test output streams that list the location the test is running in.
-func RunCommand(t *testing.T, name string, args []string, wd string, opts *ProgramTestOptions) error {
+func RunCommand(name string, args []string, wd string, opts *ProgramTestOptions) error {
 	path := args[0]
 	command := strings.Join(args, " ")
 	fprintf(opts.Stdout, "**** Invoke '%v' in '%v'\n", command, wd)
